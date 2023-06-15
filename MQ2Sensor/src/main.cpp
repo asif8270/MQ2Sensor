@@ -9,7 +9,7 @@
 #include <EEPROM.h>
 
 #define         MQ_PIN                       (GPIO_NUM_34)     //define which analog input channel you are going to use
-#define         RL_VALUE                     (2.1)     //define the load resistance on the board, in kilo ohms
+#define         RL_VALUE                     (10)     //define the load resistance on the board, in kilo ohms
 #define         RO_CLEAN_AIR_FACTOR          (9.83)  //RO_CLEAR_AIR_FACTOR=(Sensor resistance in clean air)/RO,
                                                      //which is derived from the chart in datasheet
 
@@ -18,7 +18,7 @@
 #define         CALIBRATION_SAMPLE_INTERVAL  (500)   //define the time interal(in milisecond) between each samples in the
                                                      //cablibration phase
 #define         READ_SAMPLE_INTERVAL         (50)    //define how many samples you are going to take in normal operation
-#define         READ_SAMPLE_TIMES            (50)     //define the time interal(in milisecond) between each samples in 
+#define         READ_SAMPLE_TIMES            (5)     //define the time interal(in milisecond) between each samples in 
                                                      //normal operation
 
 /**********************Application Related Macros**********************************/
@@ -41,39 +41,84 @@ float           SmokeCurve[3] ={2.3,0.53,-0.44};    //two points are taken from 
                                                     //data format:{ x, y, slope}; point1: (lg200, 0.53), point2: (lg10000,  -0.22)                                                     
 float           Ro           =  10;                 //Ro is initialized to 10 kilo ohms
 
+
+/******************Calibration********************/
+#define CALIBRATION_ADDRESS 0 // EEPROM address for storing the calibrated value
+#define CALIBRATION_FLAG_ADDRESS 1 // EEPROM address for storing the calibration flag
+
+
+/************************* function(s) deceleration **************************/
 float MQCalibration(int mq_pin);
-int MQGetGasPercentage(float rs_ro_ratio, int gas_id);
-int  MQGetPercentage(float rs_ro_ratio, float *pcurve);
 float MQRead(int mq_pin);
+float MQGetGasPercentage(float rs_ro_ratio, int gas_id);
+float MQGetPercentage(float rs_ro_ratio, float *pcurve);
+float readCalibratedValue();
+void calibrateMQ2();
 
 void setup()
 {
   Serial.begin(9600);                               //UART setup, baudrate = 9600bps
-  Serial.print("\nCalibrating...\n");                
-  Ro = MQCalibration(MQ_PIN);                       //Calibrating the sensor. Please make sure the sensor is in clean air 
-                                                    //when you perform the calibration                    
-  Serial.print("Calibration is done...\n"); 
-  Serial.print("Ro=");
-  Serial.print(Ro);
-  Serial.print("kohm");
-  Serial.print("\n");
+
+  // Check if calibration has been performed
+  byte calibrationFlag = EEPROM.read(CALIBRATION_FLAG_ADDRESS);
+
+  if (calibrationFlag != 1) {
+    // Calibration has not been performed or manual recalibration requested
+    calibrateMQ2();
+  }          
+
 }
 
 void loop()
 {
+  float calibaratedRo = readCalibratedValue();
    Serial.print("LPG:"); 
-   Serial.print(MQGetGasPercentage(MQRead(MQ_PIN)/Ro,GAS_LPG) );
+   Serial.print(MQGetGasPercentage(MQRead(MQ_PIN)/calibaratedRo,GAS_LPG), 2);
    Serial.print( "ppm" );
    Serial.print("    ");   
    Serial.print("CO:"); 
-   Serial.print(MQGetGasPercentage(MQRead(MQ_PIN)/Ro,GAS_CO) );
+   Serial.print(MQGetGasPercentage(MQRead(MQ_PIN)/calibaratedRo,GAS_CO), 2);
    Serial.print( "ppm" );
    Serial.print("    ");   
    Serial.print("SMOKE:"); 
-   Serial.print(MQGetGasPercentage(MQRead(MQ_PIN)/Ro,GAS_SMOKE) );
+   Serial.print(MQGetGasPercentage(MQRead(MQ_PIN)/calibaratedRo,GAS_SMOKE), 2);
    Serial.print( "ppm" );
    Serial.print("\n");
    delay(200);
+}
+
+/************************* calibrateMQ2 *******************************************/
+void calibrateMQ2() {
+  // Code for calibrating the MQ2 sensor
+  Serial.print("\nCalibrating...");
+  // Store the calibrated value in a variable, let's say 'calibratedValue'
+  float calibratedValue = MQCalibration(MQ_PIN);
+  Serial.print("Calibration is done...\n"); 
+  Serial.print("Calibirated Ro = ");
+  Serial.print(calibratedValue);
+  Serial.print("kohm");
+  Serial.print("\n");
+  // Save the calibrated value to EEPROM
+  EEPROM.put(CALIBRATION_ADDRESS, calibratedValue);
+
+  // Set the calibration flag to indicate that calibration has been performed
+  EEPROM.write(CALIBRATION_FLAG_ADDRESS, 1);
+}
+
+/************************** readCalibratedValue ***********************************/
+float readCalibratedValue() {
+  // Read the calibration flag from EEPROM
+  byte calibrationFlag = EEPROM.read(CALIBRATION_FLAG_ADDRESS);
+
+  if (calibrationFlag == 1) {
+    // Calibration has been performed, read the calibrated value from EEPROM
+    float calibratedValue;
+    EEPROM.get(CALIBRATION_ADDRESS, calibratedValue);
+    return calibratedValue;
+  } else {
+    // Calibration has not been performed, return a default value
+    return 0; // Or any other default value you want to use
+  }
 }
 
 /****************** MQResistanceCalculation ****************************************
@@ -100,7 +145,6 @@ float MQCalibration(int mq_pin)
 {
   int i;
   float val=0;
-
   for (i=0;i<CALIBARAION_SAMPLE_TIMES;i++) {            //take multiple samples
     val += MQResistanceCalculation(analogRead(mq_pin));
     delay(CALIBRATION_SAMPLE_INTERVAL);
@@ -109,7 +153,6 @@ float MQCalibration(int mq_pin)
 
   val = val/RO_CLEAN_AIR_FACTOR;                        //divided by RO_CLEAN_AIR_FACTOR yields the Ro 
                                                         //according to the chart in the datasheet 
-
   return val; 
 }
 /*****************************  MQRead *********************************************
@@ -142,7 +185,7 @@ Output:  ppm of the target gas
 Remarks: This function passes different curves to the MQGetPercentage function which 
          calculates the ppm (parts per million) of the target gas.
 ************************************************************************************/ 
-int MQGetGasPercentage(float rs_ro_ratio, int gas_id)
+float MQGetGasPercentage(float rs_ro_ratio, int gas_id)
 {
   if ( gas_id == GAS_LPG ) {
      return MQGetPercentage(rs_ro_ratio,LPGCurve);
@@ -164,7 +207,7 @@ Remarks: By using the slope and a point of the line. The x(logarithmic value of 
          logarithmic coordinate, power of 10 is used to convert the result to non-logarithmic 
          value.
 ************************************************************************************/ 
-int  MQGetPercentage(float rs_ro_ratio, float *pcurve)
+float  MQGetPercentage(float rs_ro_ratio, float *pcurve)
 {
   return (pow(10,( ((log(rs_ro_ratio)-pcurve[1])/pcurve[2]) + pcurve[0])));
 }
